@@ -1,6 +1,0 @@
-domain: "{{ inventory_hostname }}"
-wp_host: '{{ inventory_hostname | replace(".", "_") | replace("-", "_")}}'
-db_host: "sql.mydevbox.xyz"
-db_name: '{{ inventory_hostname | replace(".", "_")|replace("-", "_") }}_db'
-db_user: '{{ inventory_hostname | replace(".", "_")|replace("-", "_") }}'
-db_pass: "{{ random_db_pass }}"

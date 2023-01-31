@@ -1,6 +1,0 @@
-domain: "test2-mydevbox.xyz"
-wp_host: 'test2_mydevbox_xyz'
-db_host: "sql.mydevbox.xyz"
-db_name: 'test2_mydevbox_xyz_db'
-db_user: 'test2_mydevbox_xyz'
-db_pass: "rAvVkf6QgRsRasH1YciAUE7WOsPwm4Q7"
