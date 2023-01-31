@@ -3,10 +3,15 @@
   shell: docker exec -it  "{{ wp_host }}" env  | grep WORDPRESS_DB_PASS | awk -F "=" '{print $2}'
   register: db_password
 
+- name: Deploy Nginx configuration file
+  template:
+    src: nginx.conf
+    dest: "/srv/www/{{ domain }}/cloudflared/nginx.conf"
+
 - name: Deploy filebrowser configuration file
   copy:
     src: filebrowser.json
-    dest: /srv/admin/filebrowser.json
+    dest: "/srv/www/{{ domain }}/cloudflared/filebrowser.json"
 
 - name: Start phpmyadmin
   docker_container:
@@ -27,7 +32,7 @@
     image: filebrowser/filebrowser
     restart: yes
     volumes:
-      - /srv/admin/filebrowser.json:/.filebrowser.json
+      - "/srv/www/{{ domain }}/cloudflared/filebrowser.json:/.filebrowser.json"
       - "/srv/www/{{ domain }}/www_data:/srv"
     networks:
       - name: "{{ wp_network }}"
@@ -43,3 +48,12 @@
     networks:
       - name: "{{ wp_network }}"
 
+- name: Start Nginx
+  docker_container:
+    name: "admin_{{ db_user }}"
+    image: nginx:latest
+    restart: yes
+    volumes:
+      - "/srv/www/{{ domain }}/cloudflared/nginx.conf:/etc/nginx/nginx.conf"
+    networks:
+      - name: "{{ wp_network }}"
