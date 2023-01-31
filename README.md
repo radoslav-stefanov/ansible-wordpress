@@ -4,3 +4,4 @@ A collection of playbooks to manage Wordpress websites.
 - phpmyadmin
 - filemanager
 - cloudflared
+- nginx
