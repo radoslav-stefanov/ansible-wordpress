@@ -1,0 +1,252 @@
+---
+- name: Create Docker networks
+  docker_network:
+    name: "{{ item }}"
+  with_items:
+    - "{{ wp_network }}"
+
+- name: Check if WordPress is not already installed
+  stat:
+    path: "/srv/www/{{ domain }}/www_data/wp-load.php"
+  register: _check_download
+
+- name: Create php-fpm and mariadb directories
+  file:
+    path: "/srv/www/{{ domain }}/{{ item }}"
+    state: directory
+  with_items:
+    - php-fpm
+    - mariadb
+
+- name: Deploy MariaDB configuration file
+  template:
+    src: my.cnf
+    dest: "/srv/www/{{ domain }}/mariadb/my.cnf"
+
+- name: Retrieve database password
+  shell: "docker exec -it  {{ db_user }}_mysql env  | grep MARIADB_PASSWORD | awk -F '=' '{print $2}'"
+  register: old_db_pass
+  when: _check_download.stat.exists == True
+
+- debug: var=old_db_pass.stdout
+
+- name: Generate random database password
+  set_fact:
+    random_db_pass: "{{ lookup('password','/dev/null chars=ascii_letters,digits length=32') }}"
+  when: _check_download.stat.exists == False and remote_mariadb is not defined
+
+- debug: var=random_db_pass
+  run_once: true
+
+- name: Start DB container
+  docker_container:
+    env:
+      MARIADB_RANDOM_ROOT_PASSWORD: "1"
+      MARIADB_DATABASE: "{{ db_name }}"
+      MARIADB_USER: "{{ db_user }}"
+      MARIADB_PASSWORD: "{{ random_db_pass }}"
+    name:  "{{ db_host }}"
+    image: mariadb:latest
+    networks_cli_compatible: yes
+    networks:
+      - name: "{{ wp_network }}"
+    restart: yes
+    restart_policy: always
+    volumes:
+      - "/srv/www/{{ domain }}/db_data:/var/lib/mysql"
+      - "/srv/www/{{ domain }}/mariadb/my.cnf:/etc/mysql/mariadb.conf.d/50-server.cnf"
+  when: _check_download.stat.exists == False
+
+- name: Start DB container
+  docker_container:
+    env:
+      MARIADB_RANDOM_ROOT_PASSWORD: "1"
+      MARIADB_DATABASE: "{{ db_name }}"
+      MARIADB_USER: "{{ db_user }}"
+      MARIADB_PASSWORD: "{{ old_db_pass.stdout | quote }}"
+    name:  "{{ db_host }}"
+    image: mariadb:latest
+    networks_cli_compatible: yes
+    networks:
+      - name: "{{ wp_network }}"
+    restart: yes
+    restart_policy: always
+    volumes:
+      - "/srv/www/{{ domain }}/db_data:/var/lib/mysql"
+      - "/srv/www/{{ domain }}/mariadb/my.cnf:/etc/mysql/mariadb.conf.d/50-server.cnf"
+  when: _check_download.stat.exists == True
+
+  #- name: Ansible check file exists example.
+  #  stat:
+  #    path: "/srv/www/{{ domain }}/db_data/{{ db_name }}"
+  #  register: file_details
+  #
+  #- debug:
+  #    msg: "The file or directory exists"
+  #  when: file_details.stat.exists
+
+- name: Wait until database is up
+  wait_for:
+    path: "/srv/www/{{ domain }}/db_data/{{ db_name }}"
+    delay: 1
+    timeout: 300
+  when: _check_download.stat.exists == False and remote_mariadb is not defined
+
+- name: Pull latest WordPress image from registry
+  docker_image:
+    name: "{{ wordpress_php_image }}"
+    source: pull
+    tag: latest
+    force_source: yes
+  when: _check_download.stat.exists == False
+
+- name: Deploy php configuration file
+  template:
+    src: "{{ item }}"
+    dest: "/srv/www/{{ domain }}/php-fpm/{{ item }}"
+  with_items:
+    - www.conf
+    - php.ini
+
+- name: Generate new cache ID salt
+  set_fact:
+    random_cache_key_salt: "{{ lookup('password','/dev/null chars=ascii_letters,digits length=32') }}"
+
+- name: Start/Restart WordPress
+  docker_container:
+    env:
+      WORDPRESS_DB_HOST: "{{ db_host }}"
+      WORDPRESS_DB_NAME: "{{ db_name }}"
+      WORDPRESS_DB_USER: "{{ db_user }}"
+      WORDPRESS_DB_PASSWORD: "{{ random_db_pass | default(old_db_pass.stdout) }}"
+      WORDPRESS_TABLE_PREFIX: "{{ wp_table_prefix | default('wp_') }}"
+      WORDPRESS_CONFIG_EXTRA: |
+        define( 'DISABLE_WP_CRON', true );
+        define( 'WP_MEMORY_LIMIT', '256M' );
+        define('FORCE_SSL_ADMIN', true);
+        if (strpos($_SERVER['HTTP_X_FORWARDED_PROTO'], 'https') !== false)
+        $_SERVER['HTTPS']='on';
+        define( 'WP_REDIS_HOST', 'redis');
+        define( 'WP_CACHE_KEY_SALT', '{{ db_user }}-{{ random_cache_key_salt }}');
+    name: "{{ wp_host }}"
+    image: "{{ wordpress_php_image }}"
+    restart: yes
+    restart_policy: always
+    networks_cli_compatible: yes
+    networks:
+      - name: "{{ wp_network }}"
+      - name: nginx_proxy
+      - name: redis
+    volumes:
+      - "/srv/www/{{ domain }}/www_data:/var/www/html:rw"
+      - "/srv/www/{{ domain }}/php-fpm/www.conf:/usr/local/etc/php-fpm.d/www.conf:rw"
+      - "/srv/www/{{ domain }}/php-fpm/php.ini:/usr/local/etc/php/php.ini-production:rw"
+
+- name: Install WordPress
+  docker_container:
+    env:
+      VIRTUAL_HOST: "{{ domain }}"
+      WORDPRESS_DB_HOST: "{{ db_host }}"
+      WORDPRESS_DB_NAME: "{{ db_name }}"
+      WORDPRESS_DB_USER: "{{ db_user }}"
+      WORDPRESS_DB_PASSWORD: "{{ random_db_pass }}"
+      WORDPRESS_TABLE_PREFIX: "{{ wp_table_prefix | default('wp_') }}"
+    name: "wp-cli_{{ db_user }}"
+    image: wordpress:cli
+    cleanup: yes
+    auto_remove: yes
+    user: '33'
+    command: >
+      /bin/sh -c '
+      sleep 10;
+      wp core install --no-color --path=/var/www/html --url=http://$VIRTUAL_HOST --title=$VIRTUAL_HOST --admin_user=admin --admin_email=admin@admin.com --admin_password=admin
+      '
+    networks:
+      - name: "{{ wp_network }}"
+    volumes:
+      - "/srv/www/{{ domain }}/www_data:/var/www/html"
+  when: _check_download.stat.exists == False
+
+- name: Wait until database is up
+  wait_for:
+    path: "/srv/www/{{ domain }}/db_data/{{ db_name }}/{{ wp_table_prefix | default('wp_') }}users.frm"
+    delay: 15
+    timeout: 300
+  when: _check_download.stat.exists == False
+
+- name: Configure pretty permalinks
+  docker_container:
+    env:
+      WORDPRESS_DB_HOST: "{{ db_host }}"
+      WORDPRESS_DB_NAME: "{{ db_name }}"
+      WORDPRESS_DB_USER: "{{ db_user }}"
+      WORDPRESS_DB_PASSWORD: "{{ random_db_pass }}"
+    name: "wp-cli_{{ db_user }}_permalinks"
+    image: wordpress:cli
+    cleanup: yes
+    auto_remove: yes
+    user: '82'
+    command: >
+      /bin/sh -c '
+      wp rewrite structure "/%postname%/" --path=/var/www/html
+      '
+    networks:
+      - name: "{{ wp_network }}"
+    volumes:
+      - "/srv/www/{{ domain }}/www_data:/var/www/html:rw"
+  when: _check_download.stat.exists == False
+
+- name: Run plugins tasks
+  include_tasks: plugins.yml
+  when: _check_download.stat.exists == False
+
+- name: Deploy www redirect
+  template:
+    src: vhost_www.conf
+    dest: "/srv/nginx/data/vhost.d/{{ domain }}"
+  when: www_redirect is defined
+
+- name: Create crontab directory
+  file:
+    path: "/srv/www/{{ domain }}/crontab"
+    state: directory
+
+- name: Add WordPress crontab files
+  template:
+    src: "{{ item }}"
+    dest: "/srv/www/{{ domain }}/crontab/{{ item }}"
+    mode: a+x
+  with_items:
+    - crontab-jobs
+    - crontab-wordpress.sh
+    - crontab-backup.sh
+
+- name: Deploy system crontab files
+  copy:
+    src: "{{ item }}"
+    dest: "/srv/www/{{ domain }}/crontab/{{ item }}"
+    mode: a+x
+  with_items:
+    - crontab-docker-entry.sh
+    - crontab-docker-cmd.sh
+
+- name: Pull latest image from dockerhub
+  docker_image:
+    name: rstefanov/wordpressko-crontab
+    source: pull
+    tag: latest
+
+- name: Start crontab container
+  run_once: yes
+  docker_container:
+    name: "{{ wp_host }}_crontab"
+    image: rstefanov/wordpressko-crontab:latest
+    restart: yes
+    restart_policy: always
+    networks:
+      - name: "{{ wp_network }}"
+    volumes:
+      - "/srv/www/{{ domain }}/crontab/crontab-wordpress.sh:/scripts/crontab-wordpress.sh"
+      - "/srv/www/{{ domain }}/crontab/crontab-jobs:/etc/cron.d/jobs:ro"
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "/srv/www/{{ domain }}:/srv/www/{{ domain }}"

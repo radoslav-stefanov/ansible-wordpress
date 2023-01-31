@@ -1,0 +1,5 @@
+# Backup every morning @6am
+0 6 * * * /bin/bash -x /scripts/crontab-backup.sh > /proc/1/fd/1 2>/proc/1/fd/2
+
+# WordPress wp-cron, run every 10 minutes
+*/10 * * * * /bin/bash /scripts/crontab-wordpress.sh > /proc/1/fd/1 2>/proc/1/fd/2

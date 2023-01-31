@@ -1,0 +1,98 @@
+---
+- name: Install {{ item }} plugin
+  docker_container:
+    env:
+      VIRTUAL_HOST: "{{ domain }}"
+      WORDPRESS_DB_HOST: "{{ db_host }}"
+      WORDPRESS_DB_NAME: "{{ db_name }}"
+      WORDPRESS_DB_USER: "{{ db_user }}"
+      WORDPRESS_DB_PASSWORD: "{{ random_db_pass | default(old_db_pass.stdout) }}"
+      WORDPRESS_TABLE_PREFIX: "{{ wp_table_prefix | default('wp_') }}"
+    name: "wp-cli_{{ db_user }}"
+    image: wordpress:cli
+    cleanup: yes
+    auto_remove: yes
+    user: '82'
+    command: >
+      /bin/sh -c "
+      wp plugin install {{ item }}  --path=/var/www/html
+      "
+    networks:
+      - name: "{{ wp_network }}"
+    volumes:
+      - "/srv/www/{{ domain }}/www_data:/var/www/html:rw"
+  with_items:
+    - varnish-http-purge
+    - redis-cache
+
+- name: Activate {{ item }} plugin
+  docker_container:
+    env:
+      VIRTUAL_HOST: "{{ domain }}"
+      WORDPRESS_DB_HOST: "{{ db_host }}"
+      WORDPRESS_DB_NAME: "{{ db_name }}"
+      WORDPRESS_DB_USER: "{{ db_user }}"
+      WORDPRESS_DB_PASSWORD: "{{ random_db_pass | default(old_db_pass.stdout) }}"
+      WORDPRESS_TABLE_PREFIX: "{{ wp_table_prefix | default('wp_') }}"
+    name: "wp-cli_{{ db_user }}"
+    image: wordpress:cli
+    cleanup: yes
+    auto_remove: yes
+    networks:
+      - name: "{{ wp_network }}"
+    user: '82'
+    command: >
+      /bin/sh -c "
+      wp plugin activate {{ item }} --path=/var/www/html
+      "
+    volumes:
+      - "/srv/www/{{ domain }}/www_data:/var/www/html:rw"
+  with_items:
+    - varnish-http-purge
+    - redis-cache
+
+- name: Configure vhp_varnish_ip for Nginx proxy cache purge support
+  docker_container:
+    env:
+      VIRTUAL_HOST: "{{ domain }}"
+      WORDPRESS_DB_HOST: "{{ db_host }}"
+      WORDPRESS_DB_NAME: "{{ db_name }}"
+      WORDPRESS_DB_USER: "{{ db_user }}"
+      WORDPRESS_DB_PASSWORD: "{{ random_db_pass | default(old_db_pass.stdout) }}"
+      WORDPRESS_TABLE_PREFIX: "{{ wp_table_prefix | default('wp_') }}"
+    name: "wp-cli_{{ db_user }}"
+    image: wordpress:cli
+    cleanup: yes
+    auto_remove: yes
+    networks:
+      - name: "{{ wp_network }}"
+    user: '82'
+    command: >
+      /bin/sh -c "
+      wp option set vhp_varnish_ip {{ ansible_host }}
+      "
+    volumes:
+      - "/srv/www/{{ domain }}/www_data:/var/www/html:rw"
+
+- name: Enable Redis
+  docker_container:
+    env:
+      VIRTUAL_HOST: "{{ domain }}"
+      WORDPRESS_DB_HOST: "{{ db_host }}"
+      WORDPRESS_DB_NAME: "{{ db_name }}"
+      WORDPRESS_DB_USER: "{{ db_user }}"
+      WORDPRESS_DB_PASSWORD: "{{ random_db_pass | default(old_db_pass.stdout) }}"
+      WORDPRESS_TABLE_PREFIX: "{{ wp_table_prefix | default('wp_') }}"
+    name: "wp-cli_{{ db_user }}"
+    image: wordpress:cli
+    networks:
+      - name: "{{ wp_network }}"
+    cleanup: yes
+    auto_remove: yes
+    user: '82'
+    command: >
+      /bin/sh -c "
+      wp redis enable
+      "
+    volumes:
+      - "/srv/www/{{ domain }}/www_data:/var/www/html:rw"
