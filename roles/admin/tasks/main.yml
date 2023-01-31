@@ -1,0 +1,45 @@
+---
+- name: Retrieve main database password
+  shell: docker exec -it  "{{ wp_host }}" env  | grep WORDPRESS_DB_PASS | awk -F "=" '{print $2}'
+  register: db_password
+
+- name: Deploy filebrowser configuration file
+  copy:
+    src: filebrowser.json
+    dest: /srv/admin/filebrowser.json
+
+- name: Start phpmyadmin
+  docker_container:
+    env:
+      PMA_ABSOLUTE_URI: "pma.{{ domain }}"
+      PMA_HOST: "{{ db_host }}"  
+      PMA_USER: "{{ db_user }}"
+      PMA_PASSWORD: "{{ db_password.stdout }}"
+    name: "pma_{{ db_user }}"
+    image: phpmyadmin/phpmyadmin
+    restart: yes
+    networks:
+      - name: "{{ wp_network }}"
+
+- name: Start filebrowser
+  docker_container:
+    name: "filebrowser_{{ db_user }}"
+    image: filebrowser/filebrowser
+    restart: yes
+    volumes:
+      - /srv/admin/filebrowser.json:/.filebrowser.json
+      - "/srv/www/{{ domain }}/www_data:/srv"
+    networks:
+      - name: "{{ wp_network }}"
+
+- name: Start cloudflared tunnel
+  docker_container:
+    name: "cloudflared_{{ db_user }}"
+    image: cloudflare/cloudflared:latest
+    restart: yes
+    volumes:
+      - "/srv/www/{{ domain }}/cloudflared:/home/nonroot/.cloudflared"
+    command: tunnel --config /home/nonroot/.cloudflared/config.yml run
+    networks:
+      - name: "{{ wp_network }}"
+

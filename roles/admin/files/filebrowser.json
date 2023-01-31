@@ -1,0 +1,8 @@
+{
+  "port": 80,
+  "baseURL": "/webftp",
+  "address": "",
+  "log": "stdout",
+  "root": "/srv",
+  "noauth": "noauth"
+}
