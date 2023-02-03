@@ -1,0 +1,100 @@
+---
+- name: Disable caching
+  copy:
+    src: cache.conf
+    dest: "/srv/nginx/data/vhost.d/logs.{{ domain }}"
+  register: disable_cache
+
+- name: Check if PimpMyLogs exists
+  command: "test -f /srv/www/{{ domain }}/logs/index.php"
+  register: _check_download
+  failed_when: false
+  changed_when: false
+
+- name: Download PimpMyLogs
+  git:
+    repo: https://gitlab.com/radoslav-stefanov/PimpMyLog.git
+    dest: "/srv/www/{{ domain }}/logs"
+  when: _check_download.rc != 0
+
+- name: Deploy configuration file
+  template:
+    src: config.user.php
+    dest: "/srv/www/{{ domain }}/logs/"
+
+- name: Retrieve database username
+  shell: "grep DB_USER /srv/www/{{ domain }}/www_data/wp-config.php | cut -d \\' -f 4"
+  register: db_username
+
+- name: Retrieve database password
+  shell: "grep DB_PASSWORD /srv/www/{{ domain }}/www_data/wp-config.php | cut -d \\' -f 4"
+  register: db_password
+
+- name: Create http basic authentication users
+  htpasswd:
+    path: "/srv/www/{{ domain }}/nginx/.htpasswd"
+    name: "{{ db_username.stdout }}"
+    password: "{{ db_password.stdout }}"
+    owner: '82'
+    group: 'www-data'
+    mode: 0640
+
+- name: Start pimpmylogs container in single server mode
+  docker_container:
+    env:
+      VIRTUAL_HOST: "logs.{{ domain }}"
+      LETSENCRYPT_HOST: "logs.{{ domain }}"
+      LETSENCRYPT_EMAIL: "{{ letsencrypt_email }}"
+    name: "logs_{{ db_user }}"
+    image: registry.gitlab.com/radoslav-stefanov/pimpmylogs/master
+    restart: yes
+    restart_policy: always
+    volumes:
+      - "/srv/www/{{ domain }}/logs:/var/www/html"
+      - "/var/log/nginx/{{ domain }}:/var/log/nginx"
+      - "/srv/www/{{ domain }}/nginx/.htpasswd:/etc/nginx/.htpasswd"
+    log_driver: syslog
+    log_options:
+      tag: "pimpmylogs_{{ db_user }}"
+      syslog-address: "udp://127.0.0.1:514"
+    networks:
+      - name: "{{ wp_network }}"
+      - name: nginx_proxy
+        #      - name: rsyslog
+
+- name: Fix permissions
+  file:
+    path: "/srv/www/{{ domain }}/logs"
+    state: directory
+    owner: 82
+    group: 82
+
+- name: Fix permissions
+  file:
+    path: "/var/log/nginx/{{ domain }}"
+    recurse: yes
+    state: directory
+    owner: '82'
+    group: '82'
+
+- name: Start Nginx container
+  docker_container:
+    ports:
+      - 80:80
+      - 443:443
+    name: nginx
+    image: "{{ nginx_image }}"
+    purge_networks: yes
+    networks:
+      - name: nginx_proxy
+    restart: yes
+    restart_policy: always
+    volumes:
+      - /srv/nginx/data/nginx.conf:/etc/nginx/nginx.conf
+      - /srv/nginx/data/proxy.conf:/etc/nginx/proxy.conf
+      - /srv/nginx/data/certs:/etc/nginx/certs:ro
+      - /srv/nginx/data/conf.d:/etc/nginx/conf.d
+      - /srv/nginx/data/vhost.d:/etc/nginx/vhost.d
+      - /srv/nginx/data/html:/usr/share/nginx/html
+      - /srv/nginx/data/certs/dhparam.pem:/etc/nginx/dhparam/dhparam.pem
+  when: disable_cache.changed
