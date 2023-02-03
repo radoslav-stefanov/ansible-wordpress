@@ -1,0 +1,88 @@
+---
+- name: Create Nginx directory
+  file:
+    path: "/srv/ssl"
+    state: directory
+
+- name: Create htpasswd directory
+  file:
+    path: "/srv/www/{{ domain }}/nginx/{{ item }}"
+    state: directory
+  with_items:
+    - htpasswd
+
+- name: Create http basic authentication users
+  htpasswd:
+    path: "/srv/www/{{ domain }}/nginx/htpasswd/{{ item }}"
+    name: "{{ db_user }}"
+    password: "{{ db_pass }}"
+    owner: systemd-resolve
+    group: systemd-journal
+    mode: 0640
+  with_items:
+    - "{{ domain }}"
+    - "www.{{ domain }}"
+
+- name: Check that the somefile.conf exists
+  stat:
+    path: /root/.rnd
+  register: ssl_enabled
+
+- name: Generate random file
+  command: dd if=/dev/urandom of=/root/.rnd bs=256 count=1
+  when: ssl_enabled.stat.exists == False
+
+- name: Create self-signed certificate, if configured.
+  command: >
+    openssl req -x509 -nodes -subj '/CN={{ inventory_hostname }}' -days 365
+    -newkey rsa:2048 -sha256 -keyout "/srv/ssl/server.key" -out "/srv/ssl/server.crt"
+    creates="/srv/ssl/server.crt"
+  when: ssl_enabled.stat.exists == False
+
+- name: Make sure backend instances are up
+  wait_for:
+    host: "{{ hostvars[item].local_ip }}"
+    port: "{{ workers_port }}"
+    state: started
+    delay: 5
+    connect_timeout: 15
+    timeout: 30
+  with_items: "{{ groups.php }}"
+
+- name: Pull latest WordPress image from registry
+  docker_image:
+    name: "{{ nginx_image }}"
+    source: pull
+    tag: latest
+    force: yes
+  with_items: "{{ groups.web }}"
+  delegate_to: "{{ item }}"
+
+- name: Stop and remove container
+  docker_container:
+    name: "nginx_{{ db_user }}"
+    state: absent
+
+- name: Start Nginx container in cluster mode
+  docker_container:
+    env_file: "/srv/www/{{ domain }}/nginx/env"
+    name: "nginx_{{ db_user }}"
+    image: "{{ nginx_image }}"
+    restart: yes
+    restart_policy: always
+    log_driver: syslog
+    log_options:
+      syslog-address: "udp://{{ remote_syslog_server | default ( syslog_server ) }}:514"
+      tag: "nginx_{{ domain }}"
+    ports:
+      - "{{ workers_port }}:443"
+    volumes:
+      - "/srv/www/{{ domain }}/www_data:/var/www/html:rw"
+      - "/srv/www/{{ domain }}/nginx/php.conf:/etc/nginx/php.conf:ro"
+      - "/srv/www/{{ domain }}/nginx/vouch.conf:/etc/nginx/vouch.conf:ro"
+      - "/srv/www/{{ domain }}/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro"
+      - "/srv/www/{{ domain }}/nginx/nginx.conf:/etc/nginx/nginx.conf:ro"
+      - "/srv/ssl:/etc/nginx/ssl:ro"
+      - "/mnt/nginx_cache/{{ db_user }}:/tmp/fastcgi_cache/{{ db_user }}"
+  delegate_to: "{{ item }}"
+  with_items: "{{ groups.web }}"

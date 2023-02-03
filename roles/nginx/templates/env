@@ -1,0 +1,3 @@
+VIRTUAL_HOST={{ domain }},www.{{ domain }}
+LETSENCRYPT_HOST={{ domain }},www.{{ domain }}
+LETSENCRYPT_EMAIL={{ letsencrypt_email }}
