@@ -1,0 +1,5 @@
+tunnel: {{ tunnel_id.stdout }}
+credentials-file: /home/nonroot/.cloudflared/{{ tunnel_id.stdout }}.json
+
+ingress:
+  - service: http://admin_{{ wp_host }}:80
