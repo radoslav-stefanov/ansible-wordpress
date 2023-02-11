@@ -1,6 +1,36 @@
 ---
-- include: cluster.yml
-  when: cluster is defined
+- name: Check if PimpMyLogs exists
+  command: "test -f /srv/www/{{ domain }}/logs/index.php"
+  register: _check_download
+  failed_when: false
+  changed_when: false
 
-- include: single_server.yml
-  when: cluster is not defined
+- name: Download PimpMyLogs
+  git:
+    repo: https://gitlab.com/radoslav-stefanov/PimpMyLog.git
+    dest: "/srv/www/{{ domain }}/logs"
+  when: _check_download.rc != 0
+
+- name: Deploy configuration file
+  template:
+    src: config.user.php
+    dest: "/srv/www/{{ domain }}/logs/"
+
+- name: Start pimpmylogs container
+  docker_container:
+    name: "logs_{{ db_user }}"
+    image: registry.gitlab.com/radoslav-stefanov/pimpmylogs/master
+    restart: yes
+    restart_policy: always
+    volumes:
+      - "/srv/www/{{ domain }}/logs:/var/www/html"
+      - "/var/log/nginx/{{ domain }}:/var/log/nginx"
+    networks:
+      - name: "{{ wp_network }}"
+
+- name: Fix permissions
+  file:
+    path: "/srv/www/{{ domain }}/logs"
+    state: directory
+    owner: 82
+    group: 82
