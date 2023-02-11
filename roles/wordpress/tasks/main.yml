@@ -5,6 +5,10 @@
   with_items:
     - "{{ wp_network }}"
 
+- name: Strip subdomain
+  shell: echo {{ domain }} | sed 's/.*\.\(.*\..*\)/\1/'
+  register: strip_domain
+
 - name: Check if WordPress is not already installed
   stat:
     path: "/srv/www/{{ domain }}/www_data/wp-load.php"
@@ -27,8 +31,6 @@
   shell: "docker exec -it  {{ db_user }}_mysql env  | grep MARIADB_PASSWORD | awk -F '=' '{print $2}'"
   register: old_db_pass
   when: _check_download.stat.exists == True
-
-- debug: var=old_db_pass.stdout
 
 - name: Generate random database password
   set_fact:
@@ -128,6 +130,10 @@
         $_SERVER['HTTPS']='on';
         define( 'WP_REDIS_HOST', 'redis');
         define( 'WP_CACHE_KEY_SALT', '{{ db_user }}-{{ random_cache_key_salt }}');
+        define( 'WP_HOME', 'https://{{ domain }}/my-admin/stage' );
+        define( 'WP_SITEURL', 'https://{{ domain }} /my-admin/stage' );
+        $_SERVER['REQUEST_URI'] = str_replace("/wp-admin/", "/my-admin/stage/wp-admin/", $_SERVER['REQUEST_URI']);
+        $_SERVER['REQUEST_URI'] = str_replace("/wp-login.php", "/my-admin/stage/wp-login.php", $_SERVER['REQUEST_URI']);
     name: "{{ wp_host }}"
     image: "{{ wordpress_php_image }}"
     restart: yes
@@ -141,11 +147,42 @@
       - "/srv/www/{{ domain }}/www_data:/var/www/html:rw"
       - "/srv/www/{{ domain }}/php-fpm/www.conf:/usr/local/etc/php-fpm.d/www.conf:rw"
       - "/srv/www/{{ domain }}/php-fpm/php.ini:/usr/local/etc/php/php.ini-production:rw"
+  when: stage is defined
+
+- name: Start/Restart WordPress
+  docker_container:
+    env:
+      WORDPRESS_DB_HOST: "{{ db_host }}"
+      WORDPRESS_DB_NAME: "{{ db_name }}"
+      WORDPRESS_DB_USER: "{{ db_user }}"
+      WORDPRESS_DB_PASSWORD: "{{ random_db_pass | default(old_db_pass.stdout) }}"
+      WORDPRESS_TABLE_PREFIX: "{{ wp_table_prefix | default('wp_') }}"
+      WORDPRESS_CONFIG_EXTRA: |
+        define( 'DISABLE_WP_CRON', true );
+        define( 'WP_MEMORY_LIMIT', '256M' );
+        define('FORCE_SSL_ADMIN', true);
+        if (strpos($_SERVER['HTTP_X_FORWARDED_PROTO'], 'https') !== false)
+        $_SERVER['HTTPS']='on';
+        define( 'WP_REDIS_HOST', 'redis');
+        define( 'WP_CACHE_KEY_SALT', '{{ db_user }}-{{ random_cache_key_salt }}');
+    name: "{{ wp_host }}"
+    image: "{{ wordpress_php_image }}"
+    restart: yes
+    restart_policy: always
+    networks_cli_compatible: yes
+    networks:
+      - name: "{{ wp_network }}"
+      - name: nginx_proxy
+      - name: redis
+    volumes:
+      - "/srv/www/{{ domain }}/www_data:/var/www/html:rw"
+      - "/srv/www/{{ domain }}/php-fpm/www.conf:/usr/local/etc/php-fpm.d/www.conf:rw"
+      - "/srv/www/{{ domain }}/php-fpm/php.ini:/usr/local/etc/php/php.ini-production:rw"
+  when: stage is not defined
 
 - name: Install WordPress
   docker_container:
     env:
-      VIRTUAL_HOST: "{{ domain }}"
       WORDPRESS_DB_HOST: "{{ db_host }}"
       WORDPRESS_DB_NAME: "{{ db_name }}"
       WORDPRESS_DB_USER: "{{ db_user }}"
@@ -159,13 +196,37 @@
     command: >
       /bin/sh -c '
       sleep 10;
-      wp core install --no-color --path=/var/www/html --url=http://$VIRTUAL_HOST --title=$VIRTUAL_HOST --admin_user=admin --admin_email=admin@admin.com --admin_password=admin
+      wp core install --no-color --path=/var/www/html --url=http://{{ domain }} --title={{ domain }} --admin_user=admin --admin_email=admin@admin.com --admin_password=admin
       '
     networks:
       - name: "{{ wp_network }}"
     volumes:
       - "/srv/www/{{ domain }}/www_data:/var/www/html"
-  when: _check_download.stat.exists == False
+  when: _check_download.stat.exists == False and stage is not defined
+
+- name: Install WordPress
+  docker_container:
+    env:
+      WORDPRESS_DB_HOST: "{{ db_host }}"
+      WORDPRESS_DB_NAME: "{{ db_name }}"
+      WORDPRESS_DB_USER: "{{ db_user }}"
+      WORDPRESS_DB_PASSWORD: "{{ random_db_pass }}"
+      WORDPRESS_TABLE_PREFIX: "{{ wp_table_prefix | default('wp_') }}"
+    name: "wp-cli_{{ db_user }}"
+    image: wordpress:cli
+    cleanup: yes
+    auto_remove: yes
+    user: '33'
+    command: >
+      /bin/sh -c '
+      sleep 10;
+      wp core install --no-color --path=/var/www/html --url=http://admin.{{ strip_domain.stdout }} --title=admin.{{ strip_domain.stdout }} --admin_user=admin --admin_email=admin@admin.com --admin_password=admin
+      '
+    networks:
+      - name: "{{ wp_network }}"
+    volumes:
+      - "/srv/www/{{ domain }}/www_data:/var/www/html"
+  when: _check_download.stat.exists == False and stage is defined
 
 - name: Wait until database is up
   wait_for:
