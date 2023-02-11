@@ -5,7 +5,7 @@
   with_items:
     - "{{ wp_network }}"
 
-- name: Strip subdomain
+- name: Strip subdomain if we are using a subdomain
   shell: echo {{ domain }} | sed 's/.*\.\(.*\..*\)/\1/'
   register: strip_domain
 
@@ -27,20 +27,17 @@
     src: my.cnf
     dest: "/srv/www/{{ domain }}/mariadb/my.cnf"
 
-- name: Retrieve database password
+- name: Retrieve database password from env
   shell: "docker exec -it  {{ db_user }}_mysql env  | grep MARIADB_PASSWORD | awk -F '=' '{print $2}'"
   register: old_db_pass
   when: _check_download.stat.exists == True
 
-- name: Generate random database password
+- name: Generate random database password if it is a new installation
   set_fact:
     random_db_pass: "{{ lookup('password','/dev/null chars=ascii_letters,digits length=32') }}"
   when: _check_download.stat.exists == False and remote_mariadb is not defined
 
-- debug: var=random_db_pass
-  run_once: true
-
-- name: Start DB container
+- name: Start database container
   docker_container:
     env:
       MARIADB_RANDOM_ROOT_PASSWORD: "1"
@@ -59,7 +56,7 @@
       - "/srv/www/{{ domain }}/mariadb/my.cnf:/etc/mysql/mariadb.conf.d/50-server.cnf"
   when: _check_download.stat.exists == False
 
-- name: Start DB container
+- name: Restart database container if we are updating existing installation
   docker_container:
     env:
       MARIADB_RANDOM_ROOT_PASSWORD: "1"
@@ -78,16 +75,7 @@
       - "/srv/www/{{ domain }}/mariadb/my.cnf:/etc/mysql/mariadb.conf.d/50-server.cnf"
   when: _check_download.stat.exists == True
 
-  #- name: Ansible check file exists example.
-  #  stat:
-  #    path: "/srv/www/{{ domain }}/db_data/{{ db_name }}"
-  #  register: file_details
-  #
-  #- debug:
-  #    msg: "The file or directory exists"
-  #  when: file_details.stat.exists
-
-- name: Wait until database is up
+- name: Wait until database is fully up
   wait_for:
     path: "/srv/www/{{ domain }}/db_data/{{ db_name }}"
     delay: 1
@@ -130,10 +118,6 @@
         $_SERVER['HTTPS']='on';
         define( 'WP_REDIS_HOST', 'redis');
         define( 'WP_CACHE_KEY_SALT', '{{ db_user }}-{{ random_cache_key_salt }}');
-        define( 'WP_HOME', 'https://{{ domain }}/my-admin/stage' );
-        define( 'WP_SITEURL', 'https://{{ domain }} /my-admin/stage' );
-        $_SERVER['REQUEST_URI'] = str_replace("/wp-admin/", "/my-admin/stage/wp-admin/", $_SERVER['REQUEST_URI']);
-        $_SERVER['REQUEST_URI'] = str_replace("/wp-login.php", "/my-admin/stage/wp-login.php", $_SERVER['REQUEST_URI']);
     name: "{{ wp_host }}"
     image: "{{ wordpress_php_image }}"
     restart: yes
@@ -147,38 +131,6 @@
       - "/srv/www/{{ domain }}/www_data:/var/www/html:rw"
       - "/srv/www/{{ domain }}/php-fpm/www.conf:/usr/local/etc/php-fpm.d/www.conf:rw"
       - "/srv/www/{{ domain }}/php-fpm/php.ini:/usr/local/etc/php/php.ini-production:rw"
-  when: stage is defined
-
-- name: Start/Restart WordPress
-  docker_container:
-    env:
-      WORDPRESS_DB_HOST: "{{ db_host }}"
-      WORDPRESS_DB_NAME: "{{ db_name }}"
-      WORDPRESS_DB_USER: "{{ db_user }}"
-      WORDPRESS_DB_PASSWORD: "{{ random_db_pass | default(old_db_pass.stdout) }}"
-      WORDPRESS_TABLE_PREFIX: "{{ wp_table_prefix | default('wp_') }}"
-      WORDPRESS_CONFIG_EXTRA: |
-        define( 'DISABLE_WP_CRON', true );
-        define( 'WP_MEMORY_LIMIT', '256M' );
-        define('FORCE_SSL_ADMIN', true);
-        if (strpos($_SERVER['HTTP_X_FORWARDED_PROTO'], 'https') !== false)
-        $_SERVER['HTTPS']='on';
-        define( 'WP_REDIS_HOST', 'redis');
-        define( 'WP_CACHE_KEY_SALT', '{{ db_user }}-{{ random_cache_key_salt }}');
-    name: "{{ wp_host }}"
-    image: "{{ wordpress_php_image }}"
-    restart: yes
-    restart_policy: always
-    networks_cli_compatible: yes
-    networks:
-      - name: "{{ wp_network }}"
-      - name: nginx_proxy
-      - name: redis
-    volumes:
-      - "/srv/www/{{ domain }}/www_data:/var/www/html:rw"
-      - "/srv/www/{{ domain }}/php-fpm/www.conf:/usr/local/etc/php-fpm.d/www.conf:rw"
-      - "/srv/www/{{ domain }}/php-fpm/php.ini:/usr/local/etc/php/php.ini-production:rw"
-  when: stage is not defined
 
 - name: Install WordPress
   docker_container:
@@ -202,33 +154,9 @@
       - name: "{{ wp_network }}"
     volumes:
       - "/srv/www/{{ domain }}/www_data:/var/www/html"
-  when: _check_download.stat.exists == False and stage is not defined
+  when: _check_download.stat.exists == False
 
-- name: Install WordPress
-  docker_container:
-    env:
-      WORDPRESS_DB_HOST: "{{ db_host }}"
-      WORDPRESS_DB_NAME: "{{ db_name }}"
-      WORDPRESS_DB_USER: "{{ db_user }}"
-      WORDPRESS_DB_PASSWORD: "{{ random_db_pass }}"
-      WORDPRESS_TABLE_PREFIX: "{{ wp_table_prefix | default('wp_') }}"
-    name: "wp-cli_{{ db_user }}"
-    image: wordpress:cli
-    cleanup: yes
-    auto_remove: yes
-    user: '33'
-    command: >
-      /bin/sh -c '
-      sleep 10;
-      wp core install --no-color --path=/var/www/html --url=http://admin.{{ strip_domain.stdout }} --title=admin.{{ strip_domain.stdout }} --admin_user=admin --admin_email=admin@admin.com --admin_password=admin
-      '
-    networks:
-      - name: "{{ wp_network }}"
-    volumes:
-      - "/srv/www/{{ domain }}/www_data:/var/www/html"
-  when: _check_download.stat.exists == False and stage is defined
-
-- name: Wait until database is up
+- name: Wait until installation finishes
   wait_for:
     path: "/srv/www/{{ domain }}/db_data/{{ db_name }}/{{ wp_table_prefix | default('wp_') }}users.frm"
     delay: 15
@@ -261,7 +189,7 @@
   include_tasks: plugins.yml
   when: _check_download.stat.exists == False
 
-- name: Deploy www redirect
+- name: Deploy www redirect if enabled
   template:
     src: vhost_www.conf
     dest: "/srv/nginx/data/vhost.d/{{ domain }}"
@@ -291,7 +219,7 @@
     - crontab-docker-entry.sh
     - crontab-docker-cmd.sh
 
-- name: Pull latest image from dockerhub
+- name: Pull latest crontab image from dockerhub
   docker_image:
     name: rstefanov/wordpressko-crontab
     source: pull
