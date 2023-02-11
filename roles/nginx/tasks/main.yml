@@ -1,13 +1,31 @@
 ---
+- name: Retrieve main database password
+  shell: docker exec -it  "{{ wp_host }}" env  | grep WORDPRESS_DB_PASS | awk -F "=" '{print $2}'
+  register: db_password
+
 - name: Create Nginx directory
   file:
     path: "/srv/www/{{ domain }}/nginx"
+    state: directory
+
+- name: Create Nginx directory
+  file:
+    path: "/srv/www/{{ domain }}/nginx/my-admin"
     state: directory
 
 - name: Create SSL directory
   file:
     path: /srv/ssl
     state: directory
+
+- name: Strip subdomain
+  shell: echo {{ domain }} | sed 's/.*\.\(.*\..*\)/\1/'
+  register: strip_domain
+
+- name: Deploy Nginx configuration file
+  template:
+    src: index.html
+    dest: "/srv/www/{{ domain }}/nginx/my-admin/index.html"
 
 - name: Deploy global configuration files
   template:
@@ -23,7 +41,6 @@
   template:
     src: vouch.conf
     dest: "/srv/www/{{ domain }}/nginx/vouch.conf"
-  when: vouch is defined
 
 - name: Deploy global configuration files
   template:
@@ -61,6 +78,19 @@
     group: 33
     mode: 0640
 
+- name: Start phpmyadmin
+  docker_container:
+    env:
+      PMA_HOST: "{{ db_host }}"
+      PMA_USER: "{{ db_user }}"
+      PMA_PASSWORD: "{{ db_password.stdout }}"
+    name: "pma_{{ db_user }}"
+    image: phpmyadmin/phpmyadmin
+    restart: yes
+    networks:
+      - name: admin
+      - name: "{{ wp_host }}"
+
 - name: Start Nginx container
   docker_container:
     env:
@@ -76,12 +106,15 @@
     networks:
       - name: "{{ wp_network }}"
       - name: nginx_proxy
+      - name: "vouch_{{ wp_network }}"
     volumes:
       - nginx_cache:/tmp/fastcgi_cache
       - "/srv/www/{{ domain }}/nginx/fastcgi.conf:/etc/nginx/fastcgi.conf"
       - "/srv/www/{{ domain }}/www_data:/var/www/html:rw"
       - "/srv/www/{{ domain }}/nginx/php.conf:/etc/nginx/php.conf:ro"
       - "/srv/www/{{ domain }}/nginx/default.conf:/etc/nginx/conf.d/default.conf"
+      - "/srv/www/{{ domain }}/nginx/vouch.conf:/etc/nginx/vouch.conf"
+      - "/srv/www/{{ domain }}/nginx/my-admin:/var/www/html/my-admin"
       - "/srv/www/{{ domain }}/nginx/nginx.conf:/etc/nginx/nginx.conf:ro"
       - "/var/log/nginx/{{ domain }}:/var/log/nginx"
       - "/srv/ssl:/etc/nginx/ssl:ro"
