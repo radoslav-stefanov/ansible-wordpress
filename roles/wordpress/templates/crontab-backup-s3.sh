@@ -16,7 +16,7 @@
 ### Process of execution
 # 1. Export database.
 # 2. Archive it.
-# 3. Copy filesystem and database backups.
+# 3. Create incremental filesystem backup.
 # 4. Cleanup leftovers.
 
 # Wait randomly between 1 to 300 seconds.
@@ -42,39 +42,36 @@ for w in $websites; do
   # Export database
   docker container run --env-file /tmp/$container --name=backup_"$container" --user="$get_user" --network="$container" -v /mnt/www/"$w"/www_data:/var/www/html:rw --rm wordpress:cli /bin/sh -c 'wp db export --quiet --add-drop-table .backup.sql'
 
-#  # Create system directories
- for dir in $system_dirs; do
-   if [ ! -d $backup_volume/$w/$dir ]; then
-     mkdir -p $backup_volume/$w/$dir
-#  if ! ssh backups ls backups/$w/$dir > /dev/null 2>&1; then
-#    ssh backups mkdir -p backups/$w/$dir
-  fi
+  # Create system directories
+  for dir in $system_dirs; do
+    if [ ! -d $backup_volume/$w/$dir ]; then
+      mkdir -p $backup_volume/$w/$dir
+    fi
   done
 
-  cd /mnt/www/"$w"/www_data
+  # Backup database
+  cd $backup_volume/$w/database
+  mv /mnt/www/"$w"/www_data/.backup.sql .
   tar -czvf "$yesterday"_mysql_backup.tar.gz .backup.sql
-  mv "$yesterday"_mysql_backup.tar.gz /mnt/backups/$w/database/
-  #scp "$yesterday"_mysql_backup.tar.gz backups:/home/backups/$w/database/
-  rm -rf /mnt/www/"$w"/www_data/"$yesterday"_mysql_backup.tar.gz
+
+  # Backup filesystem
+  if [ -d $backup_volume/$w/content/daily.3 ] ; then
+    rm -rf $backup_volume/$w/content/daily.3
+  fi
+  if [ -d $backup_volume/$w/content/daily.2 ] ; then
+    mv $backup_volume/$w/content/daily.2 $backup_volume/$w/content/daily.3
+  fi
+  if [ -d $backup_volume/$w/content/daily.1 ]; then
+    mv $backup_volume/$w/content/daily.1 $backup_volume/$w/content/daily.2
+  fi
+  if [ -d $backup_volume/$w/content/daily.0 ] ; then
+    cp -al $backup_volume/$w/content/daily.0 $backup_volume/$w/content/daily.1
+  fi
+
+  #rsync -aq --delete /mnt/www/$w/www_data/ /mnt//backups/$w/content/daily.0/
+  rsync -aq --delete /mnt/www/$w/www_data/ backups:/home/backups/$w/content/daily.0/
+
+  # Cleanup any leftover, just in case.
   rm -rf /mnt/www/"$w"/www_data/*.sql
-  rsync -aq --delete /mnt/www/$w/www_data/ /mnt/backups/$w/content/
-
-docker run \
-  -e BORG_REPO=/borg/repo \
-  -e BACKUP_DIRS=/borg/data \
-  -e ARCHIVE={{ domain }}-$yesterday \
-  -e EXCLUDE='*/.cache*;*.tmp;/borg/data/etc/shadow' \
-  -e COMPRESSION=lz4 \
-  -e PRUNE=1 \
-  -v borg-config:/root \
-  -v /mnt/backups/borg/{{ domain }}:/borg/repo \
-  -v /mnt/backups/{{ domain }}/content:/borg/data/content:ro \
-  -v /mnt/backups/{{ domain }}/database:/borg/data/database:ro \
-  --name borg_backup_$container \
-  --rm \
-  pschiffe/borg
-
-  # Cleanup leftovers.
   rm -rf /tmp/$container
-
 done

@@ -1,9 +1,11 @@
 ---
+- set_fact: app="{{ app | default ('wordpress') }}"
+
 - name: Create Docker networks
   docker_network:
     name: "{{ item }}"
   with_items:
-    - "{{ wp_network }}"
+    - "{{ app_network }}"
 
 - name: Strip subdomain if we are using a subdomain
   shell: echo {{ domain }} | sed 's/.*\.\(.*\..*\)/\1/'
@@ -11,12 +13,12 @@
 
 - name: Check if WordPress is not already installed
   stat:
-    path: "/srv/www/{{ domain }}/www_data/wp-load.php"
+    path: "/mnt/www/{{ domain }}/www_data/wp-load.php"
   register: _check_download
 
 - name: Create php-fpm and mariadb directories
   file:
-    path: "/srv/www/{{ domain }}/{{ item }}"
+    path: "/mnt/www/{{ domain }}/{{ item }}"
     state: directory
   with_items:
     - php-fpm
@@ -25,7 +27,7 @@
 - name: Deploy MariaDB configuration file
   template:
     src: my.cnf
-    dest: "/srv/www/{{ domain }}/mariadb/my.cnf"
+    dest: "/mnt/www/{{ domain }}/mariadb/my.cnf"
 
 - name: Retrieve database password from env
   shell: "docker exec -it  {{ db_user }}_mysql env  | grep MARIADB_PASSWORD | awk -F '=' '{print $2}'"
@@ -48,12 +50,12 @@
     image: mariadb:latest
     networks_cli_compatible: yes
     networks:
-      - name: "{{ wp_network }}"
+      - name: "{{ app_network }}"
     restart: yes
     restart_policy: always
     volumes:
-      - "/srv/www/{{ domain }}/db_data:/var/lib/mysql"
-      - "/srv/www/{{ domain }}/mariadb/my.cnf:/etc/mysql/mariadb.conf.d/50-server.cnf"
+      - "/mnt/www/{{ domain }}/db_data:/var/lib/mysql"
+      - "/mnt/www/{{ domain }}/mariadb/my.cnf:/etc/mysql/mariadb.conf.d/50-server.cnf"
   when: _check_download.stat.exists == False
 
 - name: Restart database container if we are updating existing installation
@@ -67,17 +69,17 @@
     image: mariadb:latest
     networks_cli_compatible: yes
     networks:
-      - name: "{{ wp_network }}"
+      - name: "{{ app_network }}"
     restart: yes
     restart_policy: always
     volumes:
-      - "/srv/www/{{ domain }}/db_data:/var/lib/mysql"
-      - "/srv/www/{{ domain }}/mariadb/my.cnf:/etc/mysql/mariadb.conf.d/50-server.cnf"
+      - "/mnt/www/{{ domain }}/db_data:/var/lib/mysql"
+      - "/mnt/www/{{ domain }}/mariadb/my.cnf:/etc/mysql/mariadb.conf.d/50-server.cnf"
   when: _check_download.stat.exists == True
 
 - name: Wait until database is fully up
   wait_for:
-    path: "/srv/www/{{ domain }}/db_data/{{ db_name }}"
+    path: "/mnt/www/{{ domain }}/db_data/{{ db_name }}"
     delay: 1
     timeout: 300
   when: _check_download.stat.exists == False and remote_mariadb is not defined
@@ -88,12 +90,12 @@
     source: pull
     tag: latest
     force_source: yes
-  when: _check_download.stat.exists == False
+      #  when: _check_download.stat.exists == False
 
 - name: Deploy php configuration file
   template:
     src: "{{ item }}"
-    dest: "/srv/www/{{ domain }}/php-fpm/{{ item }}"
+    dest: "/mnt/www/{{ domain }}/php-fpm/{{ item }}"
   with_items:
     - www.conf
     - php.ini
@@ -118,19 +120,19 @@
         $_SERVER['HTTPS']='on';
         define( 'WP_REDIS_HOST', 'redis');
         define( 'WP_CACHE_KEY_SALT', '{{ db_user }}-{{ random_cache_key_salt }}');
-    name: "{{ wp_host }}"
+    name: "{{ app_host }}"
     image: "{{ wordpress_php_image }}"
     restart: yes
     restart_policy: always
     networks_cli_compatible: yes
     networks:
-      - name: "{{ wp_network }}"
+      - name: "{{ app_network }}"
       - name: nginx_proxy
       - name: redis
     volumes:
-      - "/srv/www/{{ domain }}/www_data:/var/www/html:rw"
-      - "/srv/www/{{ domain }}/php-fpm/www.conf:/usr/local/etc/php-fpm.d/www.conf:rw"
-      - "/srv/www/{{ domain }}/php-fpm/php.ini:/usr/local/etc/php/php.ini-production:rw"
+      - "/mnt/www/{{ domain }}/www_data:/var/www/html:rw"
+      - "/mnt/www/{{ domain }}/php-fpm/www.conf:/usr/local/etc/php-fpm.d/www.conf:rw"
+      - "/mnt/www/{{ domain }}/php-fpm/php.ini:/usr/local/etc/php/php.ini-production:rw"
 
 - name: Install WordPress
   docker_container:
@@ -151,14 +153,14 @@
       wp core install --no-color --path=/var/www/html --url=http://{{ domain }} --title={{ domain }} --admin_user=admin --admin_email=admin@admin.com --admin_password=admin
       '
     networks:
-      - name: "{{ wp_network }}"
+      - name: "{{ app_network }}"
     volumes:
-      - "/srv/www/{{ domain }}/www_data:/var/www/html"
+      - "/mnt/www/{{ domain }}/www_data:/var/www/html"
   when: _check_download.stat.exists == False
 
 - name: Wait until installation finishes
   wait_for:
-    path: "/srv/www/{{ domain }}/db_data/{{ db_name }}/{{ wp_table_prefix | default('wp_') }}users.frm"
+    path: "/mnt/www/{{ domain }}/db_data/{{ db_name }}/{{ wp_table_prefix | default('wp_') }}users.frm"
     delay: 15
     timeout: 300
   when: _check_download.stat.exists == False
@@ -180,9 +182,9 @@
       wp rewrite structure "/%postname%/" --path=/var/www/html
       '
     networks:
-      - name: "{{ wp_network }}"
+      - name: "{{ app_network }}"
     volumes:
-      - "/srv/www/{{ domain }}/www_data:/var/www/html:rw"
+      - "/mnt/www/{{ domain }}/www_data:/var/www/html:rw"
   when: _check_download.stat.exists == False
 
 - name: Run plugins tasks
@@ -192,50 +194,45 @@
 - name: Deploy www redirect if enabled
   template:
     src: vhost_www.conf
-    dest: "/srv/nginx/data/vhost.d/{{ domain }}"
+    dest: "/mnt/nginx/data/vhost.d/{{ domain }}"
   when: www_redirect is defined
 
 - name: Create crontab directory
   file:
-    path: "/srv/www/{{ domain }}/crontab"
+    path: "/mnt/www/{{ domain }}/crontab"
     state: directory
 
 - name: Add WordPress crontab files
   template:
     src: "{{ item }}"
-    dest: "/srv/www/{{ domain }}/crontab/{{ item }}"
+    dest: "/mnt/www/{{ domain }}/crontab/{{ item }}"
     mode: a+x
   with_items:
     - crontab-jobs
     - crontab-wordpress.sh
     - crontab-backup.sh
 
-- name: Deploy system crontab files
-  copy:
-    src: "{{ item }}"
-    dest: "/srv/www/{{ domain }}/crontab/{{ item }}"
-    mode: a+x
-  with_items:
-    - crontab-docker-entry.sh
-    - crontab-docker-cmd.sh
-
 - name: Pull latest crontab image from dockerhub
   docker_image:
-    name: rstefanov/wordpressko-crontab
+    name: ghcr.io/radoslav-stefanov/docker-crontab:latest
     source: pull
+    force_source: yes
     tag: latest
 
 - name: Start crontab container
-  run_once: yes
   docker_container:
-    name: "{{ wp_host }}_crontab"
-    image: rstefanov/wordpressko-crontab:latest
+    name: "{{ app_host }}_crontab"
+    image: ghcr.io/radoslav-stefanov/docker-crontab:latest
     restart: yes
     restart_policy: always
     networks:
-      - name: "{{ wp_network }}"
+      - name: "{{ app_network }}"
     volumes:
-      - "/srv/www/{{ domain }}/crontab/crontab-wordpress.sh:/scripts/crontab-wordpress.sh"
-      - "/srv/www/{{ domain }}/crontab/crontab-jobs:/etc/cron.d/jobs:ro"
+      - "/mnt/www/{{ domain }}/crontab/crontab-wordpress.sh:/scripts/crontab-wordpress.sh"
+      - "/mnt/www/{{ domain }}/crontab/crontab-backup.sh:/scripts/crontab-backup.sh"
+      - "/root/.ssh/config:/root/.ssh/config"
+      - "/root/.ssh/id_ed25519:/root/.ssh/id_ed25519"
+      - "/mnt/www/{{ domain }}/crontab/crontab-jobs:/etc/cron.d/jobs:ro"
       - "/var/run/docker.sock:/var/run/docker.sock:ro"
-      - "/srv/www/{{ domain }}:/srv/www/{{ domain }}"
+      - "/mnt/www/{{ domain }}:/mnt/www/{{ domain }}"
+      - "/mnt/backups:/mnt/backups"

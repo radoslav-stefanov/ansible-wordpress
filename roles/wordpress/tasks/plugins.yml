@@ -18,9 +18,9 @@
       wp plugin install {{ item }}  --path=/var/www/html
       "
     networks:
-      - name: "{{ wp_network }}"
+      - name: "{{ app_network }}"
     volumes:
-      - "/srv/www/{{ domain }}/www_data:/var/www/html:rw"
+      - "/mnt/www/{{ domain }}/www_data:/var/www/html:rw"
   with_items:
     - varnish-http-purge
     - redis-cache
@@ -39,14 +39,14 @@
     cleanup: yes
     auto_remove: yes
     networks:
-      - name: "{{ wp_network }}"
+      - name: "{{ app_network }}"
     user: '82'
     command: >
       /bin/sh -c "
       wp plugin activate {{ item }} --path=/var/www/html
       "
     volumes:
-      - "/srv/www/{{ domain }}/www_data:/var/www/html:rw"
+      - "/mnt/www/{{ domain }}/www_data:/var/www/html:rw"
   with_items:
     - varnish-http-purge
     - redis-cache
@@ -65,14 +65,14 @@
     cleanup: yes
     auto_remove: yes
     networks:
-      - name: "{{ wp_network }}"
+      - name: "{{ app_network }}"
     user: '82'
     command: >
       /bin/sh -c "
       wp option set vhp_varnish_ip {{ ansible_host }}
       "
     volumes:
-      - "/srv/www/{{ domain }}/www_data:/var/www/html:rw"
+      - "/mnt/www/{{ domain }}/www_data:/var/www/html:rw"
 
 - name: Enable Redis
   docker_container:
@@ -86,7 +86,7 @@
     name: "wp-cli_{{ db_user }}"
     image: wordpress:cli
     networks:
-      - name: "{{ wp_network }}"
+      - name: "{{ app_network }}"
     cleanup: yes
     auto_remove: yes
     user: '82'
@@ -95,4 +95,4 @@
       wp redis enable
       "
     volumes:
-      - "/srv/www/{{ domain }}/www_data:/var/www/html:rw"
+      - "/mnt/www/{{ domain }}/www_data:/var/www/html:rw"
