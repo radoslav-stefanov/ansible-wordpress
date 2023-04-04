@@ -1,0 +1,11 @@
+#proxy_redirect off;
+#proxy_cache NGINX_CACHE;
+#proxy_cache_revalidate on;
+#proxy_ignore_headers  Expires Cache-Control;
+#proxy_cache_use_stale  error timeout invalid_header updating http_500 http_502 http_503 http_504;
+#proxy_cache_bypass $skip_cache;
+#proxy_no_cache $skip_cache;
+#proxy_cache_valid 200 301 302 500m;
+#proxy_cache_valid 404 1m;
+#proxy_cache_lock on;
+#proxy_cache_purge PURGE from all;

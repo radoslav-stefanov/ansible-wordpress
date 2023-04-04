@@ -1,0 +1,142 @@
+---
+- name: Set kernel.shmmax
+  sysctl:
+    name: kernel.shmmax
+    value: "16777216"
+    sysctl_set: yes
+    state: present
+    reload: yes
+    sysctl_file: /etc/sysctl.conf
+
+- name: Set kernel.shmall
+  sysctl:
+    name: kernel.shmall
+    value: "16777216"
+    sysctl_set: yes
+    state: present
+    reload: yes
+    sysctl_file: /etc/sysctl.conf
+
+- name: Set nf_conntrack_max
+  sysctl:
+    name: net.netfilter.nf_conntrack_max
+    value: "524288"
+    sysctl_set: yes
+    state: present
+    reload: yes
+    sysctl_file: /etc/sysctl.conf
+
+- name: Create nginx_proxy network
+  docker_network:
+    name: nginx_proxy
+
+- name: Create Nginx directories
+  file:
+    path: "/mnt/nginx/data/{{ item }}"
+    state: directory
+  with_items:
+    - conf.d
+    - certs
+    - vhost.d
+
+- name: Deploy custom configuration
+  copy:
+    src: "{{ item }}"
+    dest: "/mnt/nginx/data/conf.d/{{ item }}"
+  with_items:
+    - cloudflare.conf
+
+- name: Deploy www redirect
+  template:
+    src: default
+    dest: /mnt/nginx/data/vhost.d/default
+
+- name: Generate Diffie-Hellman parameters with the default size (4096 bits)
+  openssl_dhparam:
+    path: /mnt/nginx/data/certs/dhparam.pem
+    size: 2048
+
+- name: Deploy Nginx template
+  copy:
+    src: nginx.tmpl
+    dest: /mnt/nginx/data/nginx.tmpl
+
+- name: Deploy Nginx template
+  copy:
+    src: "{{ item }}"
+    dest: "/mnt/nginx/data/{{ item }}"
+  with_items:
+    - nginx.conf
+    - proxy.conf
+
+- name: Deploy default virtual host configuration file
+  template:
+    src: default_location
+    dest: /mnt/nginx/data/vhost.d/default_location
+
+- name: Pull latest images
+  docker_image:
+    name: "{{ item }}"
+    tag:  latest
+    source: pull
+    force_source: yes
+  with_items:
+    - "{{ nginx_image }}"
+    - jwilder/docker-gen
+    - jrcs/letsencrypt-nginx-proxy-companion
+
+- name: Start Nginx container
+  docker_container:
+    ports:
+      - 80:80
+      - 443:443
+    name: nginx
+    image: rstefanov/wordpress-nginx:master
+      #image: "{{ nginx_image }}"
+    purge_networks: yes
+    networks:
+      - name: nginx_proxy
+    restart: yes
+    restart_policy: always
+    volumes:
+      - /mnt/nginx/data/conf.d:/etc/nginx/conf.d
+      - /mnt/nginx/data/nginx.conf:/etc/nginx/nginx.conf
+      - /mnt/nginx/data/proxy.conf:/etc/nginx/proxy.conf
+      - /mnt/nginx/data/certs:/etc/nginx/certs:ro
+      - /mnt/nginx/data/vhost.d:/etc/nginx/vhost.d
+      - /mnt/nginx/data/html:/usr/share/nginx/html
+      - /mnt/nginx/data/certs/dhparam.pem:/etc/nginx/dhparam/dhparam.pem
+
+- name: Start dockergen container
+  docker_container:
+    name: dockergen
+    image: jwilder/docker-gen
+    purge_networks: yes
+    networks:
+      - name: nginx_proxy
+    restart: yes
+    restart_policy: always
+    command: -notify-sighup nginx -watch /etc/docker-gen/templates/nginx.tmpl /etc/nginx/conf.d/default.conf
+    volumes_from: nginx
+    volumes:
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+      - /mnt/nginx/data/nginx.tmpl:/etc/docker-gen/templates/nginx.tmpl
+      - /mnt/nginx/data/proxy.conf:/etc/nginx/proxy.conf
+
+- name: Start letsencrypt container
+  docker_container:
+    env:
+      NGINX_DOCKER_GEN_CONTAINER: dockergen
+    name: letsencrypt
+    image: jrcs/letsencrypt-nginx-proxy-companion
+    purge_networks: yes
+    networks:
+      - name: nginx_proxy
+    restart: yes
+    restart_policy: always
+    volumes_from: nginx
+    volumes:
+      - /mnt/nginx/data/vhost.d:/etc/nginx/vhost.d
+      - /mnt/nginx/data/certs:/etc/nginx/certs:rw
+      - /mnt/nginx/data/html:/usr/share/nginx/html
+      - /var/run/docker.sock:/var/run/docker.sock:ro
